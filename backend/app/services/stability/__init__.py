@@ -8,5 +8,6 @@ partial transcripts. Differentiates between committed (stable) text and tentativ
 from .config import StabilityConfig
 from .models import StabilityResult
 from .engine import StabilityEngine
+from .adapter import StabilityAdapter
 
-__all__ = ["StabilityEngine", "StabilityConfig", "StabilityResult"]
+__all__ = ["StabilityEngine", "StabilityConfig", "StabilityResult", "StabilityAdapter"]
