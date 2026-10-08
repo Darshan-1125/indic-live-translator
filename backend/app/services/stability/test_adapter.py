@@ -1,7 +1,7 @@
 import unittest
-from backend.app.services.stability.adapter import StabilityAdapter
-from backend.app.services.stability.config import StabilityConfig
-from backend.app.services.stability.models import StabilityResult
+from app.services.stability.adapter import StabilityAdapter
+from app.services.stability.config import StabilityConfig
+from app.services.stability.models import StabilityResult
 
 
 class TestStabilityAdapter(unittest.TestCase):
