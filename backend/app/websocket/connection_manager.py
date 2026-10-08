@@ -44,5 +44,18 @@ class ConnectionManager:
         }
         await websocket.send_json(ack_payload)
 
+    async def broadcast_json(self, session_id: str, payload: dict) -> None:
+        """Broadcast a JSON payload to every connection in a session."""
+        connections = self.active_connections.get(session_id, [])
+
+        for websocket in list(connections):
+            try:
+                await websocket.send_json(payload)
+            except Exception as e:
+                logger.error(
+                    f"Failed to broadcast to session '{session_id}': {e}",
+                    exc_info=True,
+                )
+
 
 manager = ConnectionManager()
