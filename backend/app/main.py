@@ -4,6 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
 from app.routes.health import router as health_router
+from app.routes.livekit import router as livekit_router
 from app.websocket.endpoints import router as ws_router
 
 # Configure logging
@@ -32,6 +33,7 @@ app.add_middleware(
 
 # Register routes
 app.include_router(health_router)
+app.include_router(livekit_router)
 app.include_router(ws_router)
 
 

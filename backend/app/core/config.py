@@ -17,6 +17,9 @@ class Settings(BaseSettings):
     ]
     HOST: str = "0.0.0.0"
     PORT: int = 8000
+    LIVEKIT_API_KEY: str = ""
+    LIVEKIT_API_SECRET: str = ""
+    LIVEKIT_URL: str = ""
 
     @field_validator("CORS_ORIGINS", mode="before")
     @classmethod
