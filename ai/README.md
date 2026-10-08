@@ -48,21 +48,25 @@ By keeping the AI layer purely service-oriented, the pipeline can be tested, ben
 
 ```
 ai/
-├── README.md              # AI module documentation and architecture guide
-├── requirements.txt       # Dependencies for AI services
+├── README.md                   # AI module documentation and architecture guide
+├── requirements.txt            # Dependencies for AI services
 ├── integration/
-│   ├── __init__.py        # Public integration exports
-│   ├── asr_adapter.py     # Saaras ASR output normalization adapter
+│   ├── __init__.py             # Public integration exports
+│   ├── asr_adapter.py          # Saaras ASR output normalization adapter
+│   ├── stability_adapter.py    # Stage 5: Translation to Stability Engine adapter
 │   └── translation_pipeline.py # Stage 4: ASR to Translation pipeline
 ├── services/
-│   ├── __init__.py        # Public service exports
-│   ├── saras.py           # Sarvam Saaras Speech-to-Text service abstraction
-│   ├── translation.py     # Sarvam Mayura Translation service abstraction
-│   └── tts.py             # Sarvam Bulbul Text-to-Speech service abstraction
+│   ├── __init__.py             # Public service exports
+│   ├── saras.py                # Sarvam Saaras Speech-to-Text service abstraction (REST)
+│   ├── saras_streaming.py      # Sarvam Saaras Speech-to-Text v4 streaming ASR adapter (WebSocket)
+│   ├── translation.py          # Sarvam Mayura Translation service abstraction
+│   └── tts.py                  # Sarvam Bulbul Text-to-Speech service abstraction
 └── tests/
     ├── __init__.py
-    ├── test_asr_adapter.py # Unit tests for ASR normalization adapter
-    ├── test_services.py    # Unit tests for AI service abstractions
+    ├── test_asr_adapter.py     # Unit tests for ASR normalization adapter
+    ├── test_saras_streaming.py # Unit tests for Saaras v4 streaming ASR adapter
+    ├── test_services.py        # Unit tests for AI service abstractions
+    ├── test_stability_adapter.py # Unit tests for Stability adapter
     └── test_translation_pipeline.py # Unit tests for ASR to Translation pipeline
 ```
 
@@ -170,6 +174,63 @@ print(result)
 #   "translated_text": "I got late to the meeting",
 #   "is_final": False
 # }
+### 5. Real-Time Streaming ASR (Saaras v4 WebSocket)
+
+Real-time streaming speech recognition uses Sarvam's official SDK WebSocket method (`AsyncSarvamAI.speech_to_text_streaming.connect`), supporting Tamil and Tamil-English code-mixed speech ("Tanglish").
+
+#### Normalized ASR Event Contract
+
+Every recognized partial or final transcript chunk is normalized into:
+
+```json
+{
+  "type": "asr_partial",
+  "session_id": "session-123",
+  "speaker_id": "speaker-456",
+  "text": "Naan meeting-ku late aagiten",
+  "is_final": false,
+  "language_code": "ta-IN",
+  "is_code_mixed": true
+}
+```
+
+- **Mandatory fields**: `type`, `session_id`, `speaker_id`, `text`, `is_final`
+- **Optional fields**: `language_code` (BCP-47 string, included when provided by SDK response), `is_code_mixed` (boolean, `true` when in `codemix` mode)
+
+#### Backend Consumption Example
+
+The backend handles WebSocket transport, receives audio chunks, and consumes the async stream:
+
+```python
+from ai.services.saras_streaming import SaarasStreamingASR
+from app.services.stability import StabilityAdapter
+
+async def process_incoming_audio_stream(
+    audio_chunk_stream,  # AsyncIterator[bytes] (raw WAV/PCM chunks)
+    session_id: str,
+    speaker_id: str,
+):
+    streamer = SaarasStreamingASR(
+        session_id=session_id,
+        speaker_id=speaker_id,
+        language_code="ta-IN",
+        mode="codemix",  # Supports Tamil and Tanglish code-mixed speech
+    )
+    stability = StabilityAdapter()
+
+    async for asr_event in streamer.stream(audio_chunk_stream, is_final_chunk=True):
+        # asr_event is guaranteed to follow the normalized ASR contract:
+        asr_text = asr_event["text"]
+        is_final = asr_event["is_final"]
+
+        # Backend StabilityAdapter processes partial or final ASR text
+        stability_result = stability.process_asr_result(
+            asr_text,
+            is_final=is_final,
+        )
+
+        # Broadcast stabilized result to frontend via WebSocket
+        await broadcast_to_session(session_id, stability_result)
 ```
 
 ---
@@ -192,10 +253,11 @@ All unit tests mock external network calls to ensure fast, deterministic, and is
 
 ---
 
-## Integration Roadmap (Future Milestones)
+## Integration Roadmap
 
-- [ ] **Streaming STT**: Connect Saaras WebSocket streaming (`wss://api.sarvam.ai/speech-to-text-websocket`) for ultra-low latency real-time audio chunking.
+- [x] **Streaming STT**: Sarvam Saaras v4 WebSocket streaming (`AsyncSarvamAI.speech_to_text_streaming.connect`) with normalization and Tanglish code-mix support.
+- [x] **Stage 4 Pipeline**: ASR event normalization to Sarvam Mayura Translation.
+- [x] **Stage 5 Adapter**: Translation events to backend Stability Engine adapter.
 - [ ] **Keyterm Prompting**: Inject domain-specific terminology into Saaras to boost accuracy on technical jargon.
 - [ ] **FastAPI Endpoints**: Wire up service abstractions to REST/WebSocket routes in `backend/`.
 - [ ] **LiveKit Audio Piping**: Stream audio chunks directly from LiveKit WebRTC tracks into the pipeline.
-- [ ] **Stability Engine Hook**: Pass partial transcripts through the stability engine before final translation and synthesis.
