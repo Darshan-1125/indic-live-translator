@@ -52,7 +52,8 @@ ai/
 ├── requirements.txt       # Dependencies for AI services
 ├── integration/
 │   ├── __init__.py        # Public integration exports
-│   └── asr_adapter.py     # Saaras ASR output normalization adapter
+│   ├── asr_adapter.py     # Saaras ASR output normalization adapter
+│   └── translation_pipeline.py # Stage 4: ASR to Translation pipeline
 ├── services/
 │   ├── __init__.py        # Public service exports
 │   ├── saras.py           # Sarvam Saaras Speech-to-Text service abstraction
@@ -61,7 +62,8 @@ ai/
 └── tests/
     ├── __init__.py
     ├── test_asr_adapter.py # Unit tests for ASR normalization adapter
-    └── test_services.py    # Unit tests for AI service abstractions
+    ├── test_services.py    # Unit tests for AI service abstractions
+    └── test_translation_pipeline.py # Unit tests for ASR to Translation pipeline
 ```
 
 ---
@@ -140,6 +142,34 @@ result = tts.synthesize(
 
 with open("output.wav", "wb") as f:
     f.write(result["audio_bytes"])
+```
+
+### 4. ASR → Translation Pipeline (Stage 4)
+
+```python
+from ai.integration import ASRTranslationPipeline
+
+pipeline = ASRTranslationPipeline()
+
+# Translate a normalized ASR event (handles Tamil and Tanglish code-mixed text)
+event = {
+    "type": "asr_partial",
+    "session_id": "session-123",
+    "speaker_id": "user-a",
+    "text": "Naan meeting-ku late aagiten",
+    "is_final": False,
+}
+
+result = pipeline.process(event)
+print(result)
+# {
+#   "type": "translation",
+#   "session_id": "session-123",
+#   "speaker_id": "user-a",
+#   "text": "Naan meeting-ku late aagiten",
+#   "translated_text": "I got late to the meeting",
+#   "is_final": False
+# }
 ```
 
 ---
