@@ -27,6 +27,7 @@ export interface Participant {
   isVideoOff: boolean;
   isSpeaking?: boolean;
   avatarUrl?: string;
+  isLiveKitParticipant?: boolean;
 }
 
 export interface LiveTranscript {
@@ -45,4 +46,8 @@ export interface RoomConfig {
   userName: string;
   spokenLanguage: string;
   preferredLanguage: string;
+  livekitUrl?: string;
+  livekitToken?: string;
 }
+
+export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'reconnecting' | 'error';

@@ -1,6 +1,7 @@
 import React from 'react';
-import { Languages, Video, User } from 'lucide-react';
+import { Languages, Video, User, Cpu, ShieldCheck } from 'lucide-react';
 import { SUPPORTED_LANGUAGES } from '../types/meeting';
+import { useLiveKit } from '../context/LiveKitContext';
 
 interface MeetingHeaderProps {
   roomId?: string;
@@ -17,6 +18,8 @@ export const MeetingHeader: React.FC<MeetingHeaderProps> = ({
   preferredLanguage,
   onLeaveRoom,
 }) => {
+  const { useMockMode, connectionState, toggleMockMode } = useLiveKit();
+
   const getLanguageName = (code?: string) => {
     if (!code) return '';
     const lang = SUPPORTED_LANGUAGES.find((l) => l.code === code);
@@ -33,9 +36,26 @@ export const MeetingHeader: React.FC<MeetingHeaderProps> = ({
         <div>
           <h1 className="text-base sm:text-lg font-bold text-white leading-tight flex items-center gap-2">
             Indic Live Translator
-            <span className="text-[10px] bg-indigo-500/20 text-indigo-300 font-medium px-2 py-0.5 rounded-full border border-indigo-500/30">
-              Live Demo
-            </span>
+            {/* LiveKit Mode vs Mock Mode Badge */}
+            {useMockMode ? (
+              <button
+                onClick={() => toggleMockMode(false)}
+                className="text-[10px] bg-purple-500/20 text-purple-300 font-medium px-2 py-0.5 rounded-full border border-purple-500/30 flex items-center gap-1 hover:bg-purple-500/30 transition-colors cursor-pointer"
+                title="Running in Demo Mock Mode. Click to attempt LiveKit server connection."
+              >
+                <Cpu className="w-3 h-3 text-purple-400" />
+                <span>Mock Mode</span>
+              </button>
+            ) : connectionState === 'connected' ? (
+              <span className="text-[10px] bg-emerald-500/20 text-emerald-300 font-medium px-2 py-0.5 rounded-full border border-emerald-500/30 flex items-center gap-1">
+                <ShieldCheck className="w-3 h-3 text-emerald-400" />
+                <span>LiveKit Connected</span>
+              </span>
+            ) : (
+              <span className="text-[10px] bg-amber-500/20 text-amber-300 font-medium px-2 py-0.5 rounded-full border border-amber-500/30">
+                LiveKit: {connectionState}
+              </span>
+            )}
           </h1>
           <p className="text-xs text-slate-400 hidden sm:block">
             Multilingual Real-Time Audio & Subtitle Translation

@@ -1,17 +1,25 @@
 import React, { useState } from 'react';
-import { Sparkles, User, Key, ArrowRight } from 'lucide-react';
+import { Sparkles, User, Key, ArrowRight, Server, ChevronDown, ChevronUp } from 'lucide-react';
 import type { RoomConfig } from '../types/meeting';
 import { LanguageSelector } from '../components/LanguageSelector';
+import { useLiveKit } from '../context/LiveKitContext';
 
 interface JoinMeetingProps {
   onJoinRoom: (config: RoomConfig) => void;
 }
 
 export const JoinMeeting: React.FC<JoinMeetingProps> = ({ onJoinRoom }) => {
+  const { useMockMode, toggleMockMode } = useLiveKit();
+
   const [userName, setUserName] = useState('Rahul Verma');
   const [roomId, setRoomId] = useState('indic-meet-101');
   const [spokenLanguage, setSpokenLanguage] = useState('hi');
   const [preferredLanguage, setPreferredLanguage] = useState('en');
+
+  // Optional LiveKit server connection override fields
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [livekitUrl, setLivekitUrl] = useState('');
+  const [livekitToken, setLivekitToken] = useState('');
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -22,6 +30,8 @@ export const JoinMeeting: React.FC<JoinMeetingProps> = ({ onJoinRoom }) => {
       roomId: roomId.trim(),
       spokenLanguage,
       preferredLanguage,
+      livekitUrl: livekitUrl.trim() || undefined,
+      livekitToken: livekitToken.trim() || undefined,
     });
   };
 
@@ -45,7 +55,25 @@ export const JoinMeeting: React.FC<JoinMeetingProps> = ({ onJoinRoom }) => {
           </p>
         </div>
 
-        <form onSubmit={handleSubmit} className="space-y-5">
+        {/* Mode Toggle Banner */}
+        <div className="bg-slate-800/60 p-3 rounded-2xl border border-slate-700/60 flex items-center justify-between text-xs">
+          <div className="flex items-center gap-2 text-slate-300">
+            <Server className="w-4 h-4 text-indigo-400" />
+            <span>Connection Mode:</span>
+            <span className="font-semibold text-indigo-300">
+              {useMockMode ? 'Interactive Mock Mode' : 'LiveKit Server Mode'}
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={() => toggleMockMode()}
+            className="text-[11px] font-medium text-indigo-400 hover:text-indigo-300 bg-indigo-500/10 hover:bg-indigo-500/20 px-2.5 py-1 rounded-lg border border-indigo-500/30 transition-colors cursor-pointer"
+          >
+            Switch to {useMockMode ? 'LiveKit Mode' : 'Mock Mode'}
+          </button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="space-y-4">
           {/* User Name input */}
           <div className="space-y-1.5">
             <label htmlFor="user-name-input" className="text-xs font-medium text-slate-300 flex items-center gap-1.5">
@@ -94,6 +122,49 @@ export const JoinMeeting: React.FC<JoinMeetingProps> = ({ onJoinRoom }) => {
               selectedCode={preferredLanguage}
               onChange={setPreferredLanguage}
             />
+          </div>
+
+          {/* Optional Advanced LiveKit Credentials Collapsible */}
+          <div className="pt-2">
+            <button
+              type="button"
+              onClick={() => setShowAdvanced(!showAdvanced)}
+              className="text-xs text-slate-400 hover:text-slate-200 flex items-center gap-1.5 transition-colors cursor-pointer"
+            >
+              <Server className="w-3.5 h-3.5 text-indigo-400" />
+              <span>LiveKit Connection Settings (Optional)</span>
+              {showAdvanced ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+            </button>
+
+            {showAdvanced && (
+              <div className="mt-3 bg-slate-950/80 p-4 rounded-2xl border border-slate-800 space-y-3">
+                <p className="text-[11px] text-slate-400">
+                  Leave blank to use environment variables (`VITE_LIVEKIT_URL`, `VITE_LIVEKIT_TOKEN`) or Mock Mode.
+                </p>
+
+                <div className="space-y-1">
+                  <label className="text-[11px] text-slate-300">LiveKit Server URL</label>
+                  <input
+                    type="text"
+                    value={livekitUrl}
+                    onChange={(e) => setLivekitUrl(e.target.value)}
+                    placeholder="wss://your-livekit-server.livekit.cloud"
+                    className="w-full bg-slate-900 text-slate-200 text-xs rounded-lg border border-slate-700 px-3 py-2 font-mono"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-[11px] text-slate-300">LiveKit Room Token</label>
+                  <input
+                    type="password"
+                    value={livekitToken}
+                    onChange={(e) => setLivekitToken(e.target.value)}
+                    placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                    className="w-full bg-slate-900 text-slate-200 text-xs rounded-lg border border-slate-700 px-3 py-2 font-mono"
+                  />
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Submit Button */}

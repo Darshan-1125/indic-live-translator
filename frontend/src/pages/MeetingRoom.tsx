@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { Users } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { Users, AlertCircle, X } from 'lucide-react';
 import type { RoomConfig, Participant, LiveTranscript } from '../types/meeting';
 import { SUPPORTED_LANGUAGES } from '../types/meeting';
 import { INITIAL_MOCK_PARTICIPANTS } from '../data/mockParticipants';
@@ -7,6 +7,7 @@ import { INITIAL_MOCK_TRANSCRIPTS } from '../data/mockTranscripts';
 import { ParticipantGrid } from '../components/ParticipantGrid';
 import { TranscriptPanel } from '../components/TranscriptPanel';
 import { MeetingControls } from '../components/MeetingControls';
+import { useLiveKitMeeting } from '../hooks/useLiveKitMeeting';
 
 interface MeetingRoomProps {
   config: RoomConfig;
@@ -14,16 +15,82 @@ interface MeetingRoomProps {
 }
 
 export const MeetingRoom: React.FC<MeetingRoomProps> = ({ config, onLeaveRoom }) => {
-  // Local React State
+  // LiveKit Meeting Hook
+  const {
+    connectionState,
+    useMockMode,
+    error: livekitError,
+    deviceError,
+    isConnected,
+    localParticipant: livekitLocal,
+    remoteParticipants: livekitRemotes,
+    toggleMicrophone,
+    toggleCamera,
+    connect,
+    disconnect,
+    clearDeviceError,
+  } = useLiveKitMeeting(config.spokenLanguage);
+
+  // Local Media & UI Controls State
   const [isMuted, setIsMuted] = useState(false);
   const [isVideoOff, setIsVideoOff] = useState(false);
   const [showSubtitles, setShowSubtitles] = useState(true);
   const [preferredLanguage, setPreferredLanguage] = useState(config.preferredLanguage || 'en');
   const [transcripts, setTranscripts] = useState<LiveTranscript[]>(INITIAL_MOCK_TRANSCRIPTS);
-  const [participants] = useState<Participant[]>(INITIAL_MOCK_PARTICIPANTS);
 
-  // Construct current user participant state
-  const currentUserParticipant: Participant = {
+  // Attempt LiveKit connection if explicit credentials provided
+  useEffect(() => {
+    if (config.livekitUrl && config.livekitToken) {
+      connect(config.livekitUrl, config.livekitToken);
+    }
+  }, [config.livekitUrl, config.livekitToken, connect]);
+
+  // Sync state if LiveKit local participant changes
+  useEffect(() => {
+    if (isConnected && livekitLocal) {
+      setIsMuted(livekitLocal.isMuted);
+      setIsVideoOff(livekitLocal.isVideoOff);
+    }
+  }, [isConnected, livekitLocal]);
+
+  // Handle Leave Meeting
+  const handleLeave = async () => {
+    if (isConnected) {
+      await disconnect();
+    }
+    onLeaveRoom();
+  };
+
+  // Toggle Microphone
+  const handleToggleMic = async () => {
+    const targetEnable = isMuted; // If currently muted, we want to enable mic
+    if (isConnected) {
+      const res = await toggleMicrophone(targetEnable);
+      if (res.success) {
+        setIsMuted(!targetEnable);
+      }
+    } else {
+      // Mock mode local state toggle
+      setIsMuted(!isMuted);
+    }
+  };
+
+  // Toggle Camera
+  const handleToggleVideo = async () => {
+    const targetEnable = isVideoOff; // If currently off, we want to enable camera
+    if (isConnected) {
+      const res = await toggleCamera(targetEnable);
+      if (res.success) {
+        setIsVideoOff(!targetEnable);
+      }
+    } else {
+      // Mock mode local state toggle
+      setIsVideoOff(!isVideoOff);
+    }
+  };
+
+  // Participant Resolution: LiveKit vs Mock
+  const activeCurrentUser: Participant = isConnected && livekitLocal ? livekitLocal : {
     id: 'user-self',
     name: config.userName,
     speakingLanguage: config.spokenLanguage,
@@ -32,6 +99,10 @@ export const MeetingRoom: React.FC<MeetingRoomProps> = ({ config, onLeaveRoom })
     isVideoOff: isVideoOff,
     isSpeaking: !isMuted,
   };
+
+  const activeRemoteParticipants: Participant[] = isConnected
+    ? livekitRemotes
+    : INITIAL_MOCK_PARTICIPANTS;
 
   const getLanguageName = (code: string) => {
     const lang = SUPPORTED_LANGUAGES.find((l) => l.code === code);
@@ -48,17 +119,46 @@ export const MeetingRoom: React.FC<MeetingRoomProps> = ({ config, onLeaveRoom })
 
   return (
     <div className="flex flex-col h-[calc(100vh-61px)] bg-slate-950 overflow-hidden">
+      {/* Device Permission Error Banner */}
+      {deviceError && (
+        <div className="bg-rose-500/10 border-b border-rose-500/20 px-4 py-2 flex items-center justify-between text-xs text-rose-300">
+          <div className="flex items-center gap-2">
+            <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+            <span>{deviceError}</span>
+          </div>
+          <button
+            onClick={clearDeviceError}
+            className="p-1 hover:bg-rose-500/20 rounded text-rose-400 transition-colors"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
+
+      {/* LiveKit Connection Error / Mock Mode Banner */}
+      {livekitError && useMockMode && !deviceError && (
+        <div className="bg-amber-500/10 border-b border-amber-500/20 px-4 py-1.5 flex items-center justify-between text-xs text-amber-300">
+          <div className="flex items-center gap-2">
+            <AlertCircle className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+            <span>Note: {livekitError}</span>
+          </div>
+          <span className="text-[10px] bg-amber-500/20 px-2 py-0.5 rounded text-amber-200">
+            Mock Mode Active
+          </span>
+        </div>
+      )}
+
       {/* Top Status Bar */}
       <div className="bg-slate-900/60 border-b border-slate-800/80 px-4 sm:px-6 py-2 flex flex-wrap items-center justify-between text-xs text-slate-400 gap-2">
         <div className="flex items-center gap-2">
           <Users className="w-4 h-4 text-indigo-400" />
-          <span>Active Participants: <strong className="text-slate-200">{participants.length + 1}</strong></span>
+          <span>Active Participants: <strong className="text-slate-200">{activeRemoteParticipants.length + 1}</strong></span>
         </div>
 
         <div className="flex items-center gap-3">
           <span className="bg-emerald-500/10 text-emerald-400 px-2.5 py-0.5 rounded-md border border-emerald-500/20 flex items-center gap-1.5 font-medium">
             <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
-            Translation Stream Ready
+            {isConnected ? `LiveKit Stream (${connectionState})` : 'Mock Demo Stream Active'}
           </span>
           <div className="hidden sm:flex items-center gap-2">
             <span>Spoken: <strong className="text-indigo-300">{getLanguageName(config.spokenLanguage)}</strong></span>
@@ -77,8 +177,8 @@ export const MeetingRoom: React.FC<MeetingRoomProps> = ({ config, onLeaveRoom })
           } min-h-0 overflow-hidden`}
         >
           <ParticipantGrid
-            currentUser={currentUserParticipant}
-            participants={participants}
+            currentUser={activeCurrentUser}
+            participants={activeRemoteParticipants}
             isSidebarOpen={showSubtitles}
           />
         </div>
@@ -102,11 +202,11 @@ export const MeetingRoom: React.FC<MeetingRoomProps> = ({ config, onLeaveRoom })
         isVideoOff={isVideoOff}
         showSubtitles={showSubtitles}
         preferredLanguage={preferredLanguage}
-        onToggleMic={() => setIsMuted(!isMuted)}
-        onToggleVideo={() => setIsVideoOff(!isVideoOff)}
+        onToggleMic={handleToggleMic}
+        onToggleVideo={handleToggleVideo}
         onToggleSubtitles={() => setShowSubtitles(!showSubtitles)}
         onLanguageChange={(lang) => setPreferredLanguage(lang)}
-        onLeaveMeeting={onLeaveRoom}
+        onLeaveMeeting={handleLeave}
       />
     </div>
   );
