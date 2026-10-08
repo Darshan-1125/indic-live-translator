@@ -50,13 +50,18 @@ By keeping the AI layer purely service-oriented, the pipeline can be tested, ben
 ai/
 ├── README.md              # AI module documentation and architecture guide
 ├── requirements.txt       # Dependencies for AI services
+├── integration/
+│   ├── __init__.py        # Public integration exports
+│   └── asr_adapter.py     # Saaras ASR output normalization adapter
 ├── services/
 │   ├── __init__.py        # Public service exports
 │   ├── saras.py           # Sarvam Saaras Speech-to-Text service abstraction
 │   ├── translation.py     # Sarvam Mayura Translation service abstraction
 │   └── tts.py             # Sarvam Bulbul Text-to-Speech service abstraction
 └── tests/
-    └── test_services.py   # Unit tests for AI service abstractions
+    ├── __init__.py
+    ├── test_asr_adapter.py # Unit tests for ASR normalization adapter
+    └── test_services.py    # Unit tests for AI service abstractions
 ```
 
 ---

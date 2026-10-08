@@ -7,6 +7,7 @@ and Sarvam Bulbul (TTS).
 from ai.services.saras import SaarasSpeechToTextService, SaarasSTTError
 from ai.services.translation import SarvamTranslationService, SarvamTranslationError
 from ai.services.tts import BulbulTTSService, BulbulTTSError
+from ai.integration.asr_adapter import SaarasASRAdapter, normalize_asr_result
 
 __all__ = [
     "SaarasSpeechToTextService",
@@ -15,4 +16,6 @@ __all__ = [
     "SarvamTranslationError",
     "BulbulTTSService",
     "BulbulTTSError",
+    "SaarasASRAdapter",
+    "normalize_asr_result",
 ]
