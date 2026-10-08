@@ -1,3 +1,5 @@
+import type { LocalParticipant, RemoteParticipant } from 'livekit-client';
+
 export interface Language {
   code: string;
   name: string;
@@ -28,6 +30,7 @@ export interface Participant {
   isSpeaking?: boolean;
   avatarUrl?: string;
   isLiveKitParticipant?: boolean;
+  rawParticipant?: LocalParticipant | RemoteParticipant;
 }
 
 export interface LiveTranscript {

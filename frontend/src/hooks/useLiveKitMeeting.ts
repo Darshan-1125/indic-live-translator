@@ -77,6 +77,7 @@ export function useLiveKitMeeting(userSpokenLang: string = 'hi') {
         isVideoOff,
         isSpeaking: rp.isSpeaking,
         isLiveKitParticipant: true,
+        rawParticipant: rp,
       };
     });
   }, [isConnected, remoteParticipants]);
@@ -94,6 +95,7 @@ export function useLiveKitMeeting(userSpokenLang: string = 'hi') {
       isVideoOff: !localParticipant.isCameraEnabled,
       isSpeaking: localParticipant.isSpeaking,
       isLiveKitParticipant: true,
+      rawParticipant: localParticipant,
     };
   }, [isConnected, localParticipant, userSpokenLang]);
 
