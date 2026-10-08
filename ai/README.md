@@ -53,8 +53,9 @@ ai/
 ├── integration/
 │   ├── __init__.py             # Public integration exports
 │   ├── asr_adapter.py          # Saaras ASR output normalization adapter
-│   ├── stability_adapter.py    # Stage 5: Translation to Stability Engine adapter
-│   └── translation_pipeline.py # Stage 4: ASR to Translation pipeline
+│   ├── asr_translation_pipeline.py # End-to-end: ASR → Stability → Translation pipeline
+│   ├── stability_adapter.py    # Translation to Stability Engine adapter
+│   └── translation_pipeline.py # ASR to Translation pipeline
 ├── services/
 │   ├── __init__.py             # Public service exports
 │   ├── saras.py                # Sarvam Saaras Speech-to-Text service abstraction (REST)
@@ -64,6 +65,8 @@ ai/
 └── tests/
     ├── __init__.py
     ├── test_asr_adapter.py     # Unit tests for ASR normalization adapter
+    ├── test_asr_stability_translation.py # Unit tests for ASR → Stability → Translation pipeline
+    ├── test_real_microphone.py # Live microphone test script
     ├── test_saras_streaming.py # Unit tests for Saaras v4 streaming ASR adapter
     ├── test_services.py        # Unit tests for AI service abstractions
     ├── test_stability_adapter.py # Unit tests for Stability adapter
@@ -231,6 +234,43 @@ async def process_incoming_audio_stream(
 
         # Broadcast stabilized result to frontend via WebSocket
         await broadcast_to_session(session_id, stability_result)
+### 6. End-to-End Pipeline: Audio / ASR → Backend Stability → Translation
+
+Connects real-time audio chunk streaming directly to Saaras v4 STT, passes transcripts through the backend `StabilityAdapter` (committed vs tentative tokens), and translates stable/full transcripts with Sarvam Mayura into frontend-ready caption events:
+
+```python
+from ai.integration.asr_translation_pipeline import ASRStabilityTranslationPipeline
+
+pipeline = ASRStabilityTranslationPipeline(
+    source_language_code="ta-IN",
+    target_language_code="en-IN",
+)
+
+# Stream raw audio chunks (from LiveKit WebRTC or mic) into real-time translations:
+async for event in pipeline.stream_audio(
+    audio_chunks,
+    session_id="session-123",
+    speaker_id="speaker-456",
+    is_final_chunk=True,
+):
+    print(event)
+    # {
+    #   "type": "translation",
+    #   "session_id": "session-123",
+    #   "speaker_id": "speaker-456",
+    #   "text": "நான் இன்னைக்கு homework பண்ணேன்.",
+    #   "translated_text": "I had some homework for today.",
+    #   "is_final": true,
+    #   "stability": {
+    #     "newly_committed_text": "நான் இன்னைக்கு homework பண்ணேன்.",
+    #     "cumulative_committed_text": "நான் இன்னைக்கு homework பண்ணேன்.",
+    #     "tentative_text": "",
+    #     "full_transcript": "நான் இன்னைக்கு homework பண்ணேன்.",
+    #     "is_final": true,
+    #     "stable_word_count": 4,
+    #     "tentative_word_count": 0
+    #   }
+    # }
 ```
 
 ---
@@ -246,7 +286,7 @@ pytest ai/tests/test_services.py
 Or using Python's built-in test runner:
 
 ```bash
-python3 -m unittest discover -s ai/tests
+PYTHONPATH=. python3 -m unittest discover -s ai/tests
 ```
 
 All unit tests mock external network calls to ensure fast, deterministic, and isolated execution without consuming API credits.
@@ -256,8 +296,8 @@ All unit tests mock external network calls to ensure fast, deterministic, and is
 ## Integration Roadmap
 
 - [x] **Streaming STT**: Sarvam Saaras v4 WebSocket streaming (`AsyncSarvamAI.speech_to_text_streaming.connect`) with normalization and Tanglish code-mix support.
-- [x] **Stage 4 Pipeline**: ASR event normalization to Sarvam Mayura Translation.
-- [x] **Stage 5 Adapter**: Translation events to backend Stability Engine adapter.
+- [x] **Backend StabilityAdapter**: Wraps `StabilityEngine.process_partial(asr_text, is_final)` in `backend/app/services/stability/adapter.py`.
+- [x] **ASR → Stability → Translation Pipeline**: End-to-end `ASRStabilityTranslationPipeline` producing live caption updates with stability tracking.
 - [ ] **Keyterm Prompting**: Inject domain-specific terminology into Saaras to boost accuracy on technical jargon.
 - [ ] **FastAPI Endpoints**: Wire up service abstractions to REST/WebSocket routes in `backend/`.
 - [ ] **LiveKit Audio Piping**: Stream audio chunks directly from LiveKit WebRTC tracks into the pipeline.

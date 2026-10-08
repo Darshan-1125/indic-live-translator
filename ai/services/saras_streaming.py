@@ -16,20 +16,23 @@ and normalizes every incoming transcript into the backend ASR event contract:
 
 Design notes:
 - Uses the official sarvamai AsyncSarvamAI SDK's WebSocket streaming client.
-- Each "data" response from the server is treated as a partial transcript until
-  the caller signals the final chunk (is_final=True), after which flush() is
-  sent and the last transcript event is emitted as is_final=True.
-- "events" (VAD signals) and "error" frames are handled without crashing.
-- No translation, no TTS, no FastAPI/WebSocket/LiveKit coupling.
-- Language / code-mix metadata is taken from the server response if present;
-  never fabricated.
+- Concurrently streams audio chunks and receives transcripts asynchronously without blocking.
+- Supports Saaras VAD events:
+    - signal_type="START_SPEECH": speech has started.
+    - signal_type="END_SPEECH": speech has ended for this turn.
+- Intermediate transcripts emitted while audio is being streamed are marked is_final=False.
+- When is_final_chunk=True, socket.flush() is sent, and the finalized transcript is marked is_final=True.
+- In continuous streaming mode (is_final_chunk=False), transcripts following END_SPEECH are marked is_final=True.
+- Only legitimately available metadata from the server response is included (no fabricated code-mix flags).
+- Cleans up tasks and closes WebSockets reliably on completion or cancellation.
 """
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import os
-from typing import Any, AsyncIterator, Dict, Optional
+from typing import Any, AsyncIterator, Dict, Optional, Union
 
 from sarvamai import AsyncSarvamAI
 from sarvamai.core.api_error import ApiError
@@ -48,21 +51,26 @@ _DEFAULT_LANGUAGE_CODE = "ta-IN"
 # Default mode – codemix captures Tanglish naturally
 _DEFAULT_MODE = _CODEMIX_MODE
 
+# Timeout in seconds to drain any final server messages after flush() has been sent
+_POST_FLUSH_DRAIN_TIMEOUT = 1.0
+
+_SENTINEL = object()
+
 
 def _normalize_streaming_event(
     transcript: str,
     session_id: str,
     speaker_id: str,
     is_final: bool,
-    language_code: Optional[str],
-    mode: str,
+    language_code: Optional[str] = None,
+    is_code_mixed: Optional[bool] = None,
+    mode: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Build a normalized ASR event dict from a streaming transcript chunk."""
-    # is_code_mixed: True when mode is "codemix" or the text already mixes scripts.
-    # We set it to True when using codemix mode so that the backend knows how to
-    # hand off to translation. When using pure "transcribe" mode, set to False.
-    is_code_mixed = mode == _CODEMIX_MODE
+    """Build a normalized ASR event dict from a streaming transcript chunk.
 
+    Mandatory fields: type, session_id, speaker_id, text, is_final.
+    Optional fields: language_code, is_code_mixed (only included when legitimately available).
+    """
     event: Dict[str, Any] = {
         "type": "asr_partial",
         "session_id": session_id,
@@ -71,10 +79,13 @@ def _normalize_streaming_event(
         "is_final": is_final,
     }
 
-    # Optional fields: only included when server provides them
     if language_code is not None:
         event["language_code"] = language_code
-    event["is_code_mixed"] = is_code_mixed
+
+    if is_code_mixed is not None:
+        event["is_code_mixed"] = bool(is_code_mixed)
+    elif mode is not None:
+        event["is_code_mixed"] = mode == _CODEMIX_MODE
 
     return event
 
@@ -149,123 +160,170 @@ class SaarasStreamingASR:
     ) -> AsyncIterator[Dict[str, Any]]:
         """Stream audio chunks to Saaras v4 and yield normalized ASR events.
 
-        Opens one WebSocket connection per call. Audio chunks are base64-encoded
-        WAV/PCM frames sent in order. After the last chunk, if is_final_chunk=True,
-        a flush() is sent to force finalization of any buffered audio.
-
-        Every "data" transcript received from the server is emitted as an
-        `asr_partial` event. The very last transcript, if is_final_chunk is True,
-        is emitted as `is_final=True`.
+        Opens one WebSocket connection, spawns concurrent sender and receiver coroutines,
+        and yields normalized partial and final events without blocking.
 
         Args:
             audio_chunks: Async iterable of raw audio byte chunks (WAV/PCM).
-            is_final_chunk: If True, sends a flush() after all chunks and marks
-                            the last transcript event as final.
+            is_final_chunk: If True, sends flush() after all chunks and marks
+                            the final transcript event as is_final=True.
 
         Yields:
             Normalized ASR event dictionaries.
 
         Raises:
-            SaarasStreamingError: On connection failure or API error.
+            SaarasStreamingError: On connection failure, server error, or API error.
         """
-        last_event: Optional[Dict[str, Any]] = None
+        queue: asyncio.Queue[Union[Dict[str, Any], Exception, object]] = asyncio.Queue()
+        sender_done = asyncio.Event()
+        flush_sent = asyncio.Event()
+
+        connect_kwargs: Dict[str, Any] = {
+            "language_code": self.language_code,
+            "model": self.model,
+            "mode": self.mode,
+            "input_audio_codec": self.input_audio_codec,
+            "sample_rate": str(self.sample_rate),
+            "vad_signals": "true",
+            "flush_signal": "true",
+        }
 
         try:
-            async with self._client.speech_to_text_streaming.connect(
-                language_code=self.language_code,
-                model=self.model,
-                mode=self.mode,
-                input_audio_codec=self.input_audio_codec,
-                sample_rate=str(self.sample_rate),
-            ) as socket:
-
-                # --- Send all audio chunks ---
-                async for raw_bytes in audio_chunks:
-                    if not raw_bytes:
-                        continue
-                    b64_audio = base64.b64encode(raw_bytes).decode("utf-8")
-                    await socket.transcribe(
-                        audio=b64_audio,
-                        encoding=f"audio/{self.input_audio_codec}",
-                        sample_rate=self.sample_rate,
-                    )
-
-                # --- Flush if this is the last call ---
-                if is_final_chunk:
-                    await socket.flush()
-
-                # --- Receive and normalize all responses ---
-                async for response in socket:
-                    event = self._handle_response(response)
-                    if event is not None:
-                        last_event = event
-                        yield event
-
+            connect_cm = self._client.speech_to_text_streaming.connect(**connect_kwargs)
         except ApiError as err:
             raise SaarasStreamingError(
                 f"Saaras streaming API error (status {err.status_code}): {err.body}"
             ) from err
-        except SaarasStreamingError:
-            raise
         except Exception as err:
             raise SaarasStreamingError(
-                f"Unexpected error in Saaras streaming session: {err}"
+                f"Failed to initialize Saaras streaming connection: {err}"
             ) from err
 
-        # --- Emit final event if needed ---
-        if is_final_chunk and last_event is not None and not last_event.get("is_final"):
-            final_event = dict(last_event)
-            final_event["is_final"] = True
-            yield final_event
+        async with connect_cm as socket:
 
-    def _handle_response(
-        self, response: Any
-    ) -> Optional[Dict[str, Any]]:
-        """Parse a single WebSocket response into a normalized ASR event or None.
+            async def _sender_task() -> None:
+                try:
+                    async for raw_bytes in audio_chunks:
+                        if not raw_bytes:
+                            continue
+                        b64_audio = base64.b64encode(raw_bytes).decode("utf-8")
+                        await socket.transcribe(
+                            audio=b64_audio,
+                            encoding=f"audio/{self.input_audio_codec}",
+                            sample_rate=self.sample_rate,
+                        )
+                    sender_done.set()
+                    if is_final_chunk:
+                        await socket.flush()
+                        flush_sent.set()
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    sender_done.set()
+                    if is_final_chunk:
+                        flush_sent.set()
+                    await queue.put(exc)
 
-        Uses duck typing (hasattr) so the method works with real SDK objects and
-        lightweight fake objects in tests alike.
+            async def _receiver_task() -> None:
+                socket_iter = aiter(socket)
+                speech_ended = False
+                last_event: Optional[Dict[str, Any]] = None
+                final_emitted = False
 
-        - "data" responses with a transcript field → normalized asr_partial event
-        - "data" responses with an error field → raises SaarasStreamingError
-        - "events" (VAD signals) → silently skipped
-        - Anything else → silently skipped
+                try:
+                    while True:
+                        if flush_sent.is_set():
+                            timeout = _POST_FLUSH_DRAIN_TIMEOUT
+                        elif sender_done.is_set():
+                            timeout = 1.0
+                        else:
+                            timeout = None
 
-        Returns:
-            Normalized event dict, or None if the response should be skipped.
-        """
-        if response is None:
-            return None
+                        try:
+                            if timeout is not None:
+                                resp = await asyncio.wait_for(anext(socket_iter), timeout=timeout)
+                            else:
+                                resp = await anext(socket_iter)
+                        except (StopAsyncIteration, asyncio.TimeoutError):
+                            break
 
-        resp_type = getattr(response, "type", None)
-        data = getattr(response, "data", None)
+                        resp_type = getattr(resp, "type", None)
+                        data = getattr(resp, "data", None)
 
-        if resp_type == "error":
-            # Duck-typed ErrorData check: has .error and .code attributes
-            if hasattr(data, "error") and hasattr(data, "code"):
-                raise SaarasStreamingError(
-                    f"Saaras streaming server error [{data.code}]: {data.error}"
-                )
-            raise SaarasStreamingError(f"Saaras streaming server returned error: {data!r}")
+                        if resp_type == "error":
+                            if hasattr(data, "error") and hasattr(data, "code"):
+                                raise SaarasStreamingError(
+                                    f"Saaras streaming server error [{data.code}]: {data.error}"
+                                )
+                            raise SaarasStreamingError(
+                                f"Saaras streaming server returned error: {data!r}"
+                            )
 
-        if resp_type == "events":
-            # VAD signal – not a transcript, skip silently
-            return None
+                        if resp_type == "events":
+                            sig = getattr(data, "signal_type", None)
+                            if sig == "END_SPEECH":
+                                speech_ended = True
+                            elif sig == "START_SPEECH":
+                                speech_ended = False
+                            continue
 
-        if resp_type == "data":
-            # Duck-typed SpeechToTextTranscriptionData check: has .transcript attribute
-            if hasattr(data, "transcript"):
-                transcript = data.transcript or ""
-                language_code = getattr(data, "language_code", None)
-                return _normalize_streaming_event(
-                    transcript=transcript,
-                    session_id=self.session_id,
-                    speaker_id=self.speaker_id,
-                    is_final=False,          # marked final externally after flush
-                    language_code=language_code,
-                    mode=self.mode,
-                )
+                        if resp_type == "data" and hasattr(data, "transcript"):
+                            transcript = data.transcript or ""
+                            lang_code = getattr(data, "language_code", None)
+                            server_code_mix = getattr(data, "is_code_mixed", None)
 
-        # Unknown response shape – skip
-        return None
+                            if is_final_chunk:
+                                # When is_final_chunk=True, all received items are partials
+                                # until the stream is finalized after flush
+                                evt_is_final = False
+                            else:
+                                # In continuous mode, mark final on utterance end
+                                evt_is_final = speech_ended
+                                if evt_is_final:
+                                    speech_ended = False
 
+                            evt = _normalize_streaming_event(
+                                transcript=transcript,
+                                session_id=self.session_id,
+                                speaker_id=self.speaker_id,
+                                is_final=evt_is_final,
+                                language_code=lang_code,
+                                is_code_mixed=server_code_mix,
+                            )
+                            last_event = evt
+                            if evt_is_final:
+                                final_emitted = True
+
+                            await queue.put(evt)
+
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    await queue.put(exc)
+                    return
+                finally:
+                    # When is_final_chunk=True, promote the last received transcript to final
+                    if is_final_chunk and not final_emitted and last_event is not None:
+                        final_evt = dict(last_event)
+                        final_evt["is_final"] = True
+                        await queue.put(final_evt)
+                        final_emitted = True
+                    await queue.put(_SENTINEL)
+
+            s_task = asyncio.create_task(_sender_task())
+            r_task = asyncio.create_task(_receiver_task())
+
+            try:
+                while True:
+                    item = await queue.get()
+                    if item is _SENTINEL:
+                        break
+                    if isinstance(item, Exception):
+                        if isinstance(item, (ApiError, SaarasStreamingError)):
+                            raise item if isinstance(item, SaarasStreamingError) else SaarasStreamingError(str(item))
+                        raise SaarasStreamingError(f"Unexpected error in streaming session: {item}") from item
+                    yield item
+            finally:
+                s_task.cancel()
+                r_task.cancel()
+                await asyncio.gather(s_task, r_task, return_exceptions=True)

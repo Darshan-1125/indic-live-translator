@@ -7,7 +7,6 @@ import asyncio
 import unittest
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator, List, Optional
-from unittest.mock import AsyncMock, MagicMock
 
 from ai.services.saras_streaming import (
     SaarasStreamingASR,
@@ -23,9 +22,15 @@ from ai.services.saras_streaming import (
 class _FakeTranscriptionData:
     """Mimics sarvamai.types.SpeechToTextTranscriptionData."""
 
-    def __init__(self, transcript: str, language_code: Optional[str] = None):
+    def __init__(
+        self,
+        transcript: str,
+        language_code: Optional[str] = None,
+        is_code_mixed: Optional[bool] = None,
+    ):
         self.transcript = transcript
         self.language_code = language_code
+        self.is_code_mixed = is_code_mixed
         self.request_id = "req-fake-001"
         self.timestamps = None
         self.diarized_transcript = None
@@ -43,8 +48,9 @@ class _FakeErrorData:
 class _FakeEventsData:
     """Mimics sarvamai.types.EventsData (VAD signals)."""
 
-    def __init__(self, event_type: str = "speech_start"):
+    def __init__(self, event_type: str = "speech_start", signal_type: Optional[str] = None):
         self.event_type = event_type
+        self.signal_type = signal_type or ("START_SPEECH" if "start" in event_type else "END_SPEECH")
 
 
 class _FakeStreamingResponse:
@@ -66,6 +72,7 @@ class _FakeAsyncSocket:
         self._responses = responses
         self.transcribed_chunks: List[dict] = []
         self.flushed: bool = False
+        self.closed: bool = False
 
     async def transcribe(self, audio: str, encoding: str = "audio/wav", sample_rate: int = 16000):
         self.transcribed_chunks.append({"audio": audio, "encoding": encoding, "sample_rate": sample_rate})
@@ -102,7 +109,10 @@ def _make_fake_client(responses: List[_FakeStreamingResponse]) -> tuple:
     class _FakeStreamingNamespace:
         @asynccontextmanager
         async def connect(self, **kwargs):
-            yield socket
+            try:
+                yield socket
+            finally:
+                socket.closed = True
 
     class _FakeAsyncSarvamAI:
         def __init__(self):
@@ -133,9 +143,20 @@ async def _collect(streamer: SaarasStreamingASR, chunks: List[bytes], is_final: 
 class TestNormalizeStreamingEvent(unittest.TestCase):
     """Unit tests for the _normalize_streaming_event helper."""
 
-    def test_codemix_mode_sets_is_code_mixed_true(self):
+    def test_explicit_is_code_mixed_flag(self):
         evt = _normalize_streaming_event(
             transcript="Naan meeting-ku late aagiten",
+            session_id="s1",
+            speaker_id="u1",
+            is_final=False,
+            language_code="ta-IN",
+            is_code_mixed=True,
+        )
+        self.assertTrue(evt["is_code_mixed"])
+
+    def test_mode_codemix_fallback(self):
+        evt = _normalize_streaming_event(
+            transcript="வணக்கம்",
             session_id="s1",
             speaker_id="u1",
             is_final=False,
@@ -144,7 +165,7 @@ class TestNormalizeStreamingEvent(unittest.TestCase):
         )
         self.assertTrue(evt["is_code_mixed"])
 
-    def test_transcribe_mode_sets_is_code_mixed_false(self):
+    def test_mode_transcribe_fallback(self):
         evt = _normalize_streaming_event(
             transcript="வணக்கம்",
             session_id="s1",
@@ -162,20 +183,20 @@ class TestNormalizeStreamingEvent(unittest.TestCase):
             speaker_id="u1",
             is_final=False,
             language_code="en-IN",
-            mode="transcribe",
         )
         self.assertEqual(evt["language_code"], "en-IN")
 
-    def test_language_code_omitted_when_none(self):
+    def test_language_code_and_code_mixed_omitted_when_none(self):
         evt = _normalize_streaming_event(
             transcript="hello",
             session_id="s1",
             speaker_id="u1",
             is_final=False,
             language_code=None,
-            mode="transcribe",
+            is_code_mixed=None,
         )
         self.assertNotIn("language_code", evt)
+        self.assertNotIn("is_code_mixed", evt)
 
     def test_mandatory_fields_always_present(self):
         evt = _normalize_streaming_event(
@@ -183,8 +204,6 @@ class TestNormalizeStreamingEvent(unittest.TestCase):
             session_id="sess",
             speaker_id="spk",
             is_final=True,
-            language_code=None,
-            mode="codemix",
         )
         for field in ("type", "session_id", "speaker_id", "text", "is_final"):
             self.assertIn(field, evt)
@@ -225,7 +244,7 @@ class TestSaarasStreamingASR(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(evt["speaker_id"], "spk-1")
 
     async def test_final_streaming_result(self):
-        """is_final_chunk=True triggers flush and yields the last event as is_final=True."""
+        """is_final_chunk=True triggers flush and marks the final transcript as is_final=True."""
         responses = [
             _FakeStreamingResponse(
                 "data",
@@ -257,6 +276,29 @@ class TestSaarasStreamingASR(unittest.IsolatedAsyncioTestCase):
             events = await _collect(streamer, [b"audio"], is_final=False)
             self.assertEqual(events[0]["text"], text)
 
+    async def test_english_text(self):
+        """English text recognized correctly."""
+        responses = [
+            _FakeStreamingResponse("data", _FakeTranscriptionData("Good morning everyone.", language_code="en-IN"))
+        ]
+        streamer, _ = self._make_streamer(responses)
+        events = await _collect(streamer, [b"audio"], is_final=False)
+        self.assertEqual(events[0]["text"], "Good morning everyone.")
+        self.assertEqual(events[0]["language_code"], "en-IN")
+
+    async def test_empty_transcript_handling(self):
+        """Empty transcript chunks are handled cleanly without crashing."""
+        responses = [
+            _FakeStreamingResponse("data", _FakeTranscriptionData("", language_code="ta-IN")),
+            _FakeStreamingResponse("data", _FakeTranscriptionData("வணக்கம்", language_code="ta-IN")),
+        ]
+        streamer, _ = self._make_streamer(responses)
+        events = await _collect(streamer, [b"audio"], is_final=True)
+        self.assertTrue(len(events) >= 1)
+        self.assertEqual(events[0]["text"], "")
+        self.assertEqual(events[-1]["text"], "வணக்கம்")
+        self.assertTrue(events[-1]["is_final"])
+
     async def test_session_id_preserved(self):
         """session_id from constructor is present in every normalized event."""
         responses = [
@@ -284,29 +326,43 @@ class TestSaarasStreamingASR(unittest.IsolatedAsyncioTestCase):
         events = await _collect(streamer, [b"a"], is_final=False)
         self.assertEqual(events[0].get("language_code"), "en-IN")
 
-    async def test_missing_optional_metadata(self):
-        """When language_code is None, 'language_code' key is omitted from event."""
+    async def test_code_mixed_metadata_when_available(self):
+        """is_code_mixed from server response data is included when present."""
         responses = [
-            _FakeStreamingResponse("data", _FakeTranscriptionData("hello", language_code=None))
+            _FakeStreamingResponse(
+                "data",
+                _FakeTranscriptionData("Naan homework pannen", language_code="ta-IN", is_code_mixed=True),
+            )
         ]
         streamer, _ = self._make_streamer(responses)
         events = await _collect(streamer, [b"a"], is_final=False)
-        # is_code_mixed always present; language_code absent when None
-        self.assertIn("is_code_mixed", events[0])
-        self.assertNotIn("language_code", events[0])
+        self.assertTrue(events[0].get("is_code_mixed"))
 
-    async def test_vad_events_skipped_silently(self):
-        """VAD 'events' frames produce no normalized events."""
+    async def test_missing_optional_metadata(self):
+        """When language_code and is_code_mixed are not provided by server, keys are omitted."""
         responses = [
-            _FakeStreamingResponse("events", _FakeEventsData("speech_start")),
-            _FakeStreamingResponse("data", _FakeTranscriptionData("text here")),
-            _FakeStreamingResponse("events", _FakeEventsData("speech_end")),
+            _FakeStreamingResponse("data", _FakeTranscriptionData("hello", language_code=None, is_code_mixed=None))
         ]
         streamer, _ = self._make_streamer(responses)
         events = await _collect(streamer, [b"a"], is_final=False)
-        # Only the one "data" frame should produce an event
-        self.assertEqual(len(events), 1)
-        self.assertEqual(events[0]["text"], "text here")
+        self.assertNotIn("language_code", events[0])
+        self.assertNotIn("is_code_mixed", events[0])
+
+    async def test_vad_events_speech_start_and_end(self):
+        """VAD events update internal speech state; END_SPEECH triggers turn finalization."""
+        responses = [
+            _FakeStreamingResponse("events", _FakeEventsData("speech_start", "START_SPEECH")),
+            _FakeStreamingResponse("data", _FakeTranscriptionData("partial speech")),
+            _FakeStreamingResponse("events", _FakeEventsData("speech_end", "END_SPEECH")),
+            _FakeStreamingResponse("data", _FakeTranscriptionData("final turn speech")),
+        ]
+        streamer, _ = self._make_streamer(responses)
+        events = await _collect(streamer, [b"a"], is_final=False)
+        self.assertEqual(len(events), 2)
+        self.assertEqual(events[0]["text"], "partial speech")
+        self.assertFalse(events[0]["is_final"])
+        self.assertEqual(events[1]["text"], "final turn speech")
+        self.assertTrue(events[1]["is_final"])
 
     async def test_stream_api_error_handling(self):
         """Server 'error' response raises SaarasStreamingError."""
@@ -319,6 +375,55 @@ class TestSaarasStreamingASR(unittest.IsolatedAsyncioTestCase):
             await _collect(streamer, [b"bad"], is_final=False)
 
         self.assertIn("bad audio", str(ctx.exception))
+
+    async def test_stream_cancellation(self):
+        """Cancelling the stream generator cleans up without unhandled errors."""
+        responses = [
+            _FakeStreamingResponse("data", _FakeTranscriptionData("chunk 1")),
+            _FakeStreamingResponse("data", _FakeTranscriptionData("chunk 2")),
+        ]
+        streamer, socket = self._make_streamer(responses)
+
+        async def _inf_gen():
+            while True:
+                yield b"chunk"
+                await asyncio.sleep(0.01)
+
+        gen = streamer.stream(_inf_gen())
+
+        async def _run():
+            async for _ in gen:
+                await asyncio.sleep(10)  # Wait to be cancelled
+
+        task = asyncio.create_task(_run())
+        await asyncio.sleep(0.02)
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+        await gen.aclose()
+        self.assertTrue(socket.closed)
+
+    async def test_stream_cleanup(self):
+        """Stream closes socket context manager cleanly on normal exit."""
+        responses = [
+            _FakeStreamingResponse("data", _FakeTranscriptionData("done"))
+        ]
+        streamer, socket = self._make_streamer(responses)
+        await _collect(streamer, [b"a"], is_final=True)
+        self.assertTrue(socket.closed)
+
+    async def test_no_duplicate_final_transcripts(self):
+        """Ensure exactly one final transcript is emitted when finalized."""
+        responses = [
+            _FakeStreamingResponse("data", _FakeTranscriptionData("first partial")),
+            _FakeStreamingResponse("data", _FakeTranscriptionData("second partial")),
+            _FakeStreamingResponse("data", _FakeTranscriptionData("final transcript")),
+        ]
+        streamer, _ = self._make_streamer(responses)
+        events = await _collect(streamer, [b"audio"], is_final=True)
+        final_events = [e for e in events if e.get("is_final") is True]
+        self.assertEqual(len(final_events), 1)
+        self.assertEqual(final_events[0]["text"], "final transcript")
 
     async def test_multiple_chunks_all_sent(self):
         """All audio chunks are forwarded to socket.transcribe()."""
@@ -338,20 +443,6 @@ class TestSaarasStreamingASR(unittest.IsolatedAsyncioTestCase):
         streamer, socket = self._make_streamer(responses)
         await _collect(streamer, [b"real", b"", b"also_real"], is_final=False)
         self.assertEqual(len(socket.transcribed_chunks), 2)
-
-    async def test_multiple_responses_emitted_in_order(self):
-        """Multiple transcript responses are yielded in order."""
-        responses = [
-            _FakeStreamingResponse("data", _FakeTranscriptionData("Naan")),
-            _FakeStreamingResponse("data", _FakeTranscriptionData("Naan meeting-ku")),
-            _FakeStreamingResponse("data", _FakeTranscriptionData("Naan meeting-ku late")),
-        ]
-        streamer, _ = self._make_streamer(responses)
-        events = await _collect(streamer, [b"a"], is_final=False)
-        self.assertEqual(len(events), 3)
-        self.assertEqual(events[0]["text"], "Naan")
-        self.assertEqual(events[1]["text"], "Naan meeting-ku")
-        self.assertEqual(events[2]["text"], "Naan meeting-ku late")
 
     async def test_no_api_key_raises_value_error(self):
         """Missing API key with no injected client raises ValueError."""

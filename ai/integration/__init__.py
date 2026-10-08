@@ -14,6 +14,11 @@ from ai.integration.stability_adapter import (
     adapt_translation_to_stability,
     stabilize_translation_event,
 )
+from ai.integration.asr_translation_pipeline import (
+    ASRStabilityTranslationPipeline,
+    LiveTranslationPipeline,
+    process_asr_to_stable_translation,
+)
 
 __all__ = [
     # Stage 3 – ASR normalization
@@ -31,5 +36,8 @@ __all__ = [
     "StabilityEngineProtocol",
     "adapt_translation_to_stability",
     "stabilize_translation_event",
+    # End-to-end: ASR → Stability → Translation
+    "ASRStabilityTranslationPipeline",
+    "LiveTranslationPipeline",
+    "process_asr_to_stable_translation",
 ]
-
