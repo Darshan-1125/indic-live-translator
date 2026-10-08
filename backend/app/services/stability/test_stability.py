@@ -1,7 +1,7 @@
 import unittest
-from backend.app.services.stability.config import StabilityConfig
-from backend.app.services.stability.models import StabilityResult
-from backend.app.services.stability.engine import StabilityEngine
+from app.services.stability.config import StabilityConfig
+from app.services.stability.models import StabilityResult
+from app.services.stability.engine import StabilityEngine
 
 
 class TestSimulatedASRSequence(unittest.TestCase):

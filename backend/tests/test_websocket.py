@@ -1,8 +1,9 @@
 import asyncio
 import json
 import websockets
+import pytest
 
-
+@pytest.mark.asyncio
 async def test_websocket():
     uri = "ws://127.0.0.1:8000/ws/session/test-room"
 
