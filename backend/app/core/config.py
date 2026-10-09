@@ -1,6 +1,8 @@
 import json
+import os
 from typing import List, Union
 from pydantic import field_validator
+# pyrefly: ignore [missing-import]
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -20,6 +22,7 @@ class Settings(BaseSettings):
     LIVEKIT_API_KEY: str = ""
     LIVEKIT_API_SECRET: str = ""
     LIVEKIT_URL: str = ""
+    SARVAM_API_KEY: str = ""
 
     @field_validator("CORS_ORIGINS", mode="before")
     @classmethod
@@ -42,3 +45,6 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+if settings.SARVAM_API_KEY and not os.environ.get("SARVAM_API_KEY"):
+    os.environ["SARVAM_API_KEY"] = settings.SARVAM_API_KEY.strip()

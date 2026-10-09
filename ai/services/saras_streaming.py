@@ -27,6 +27,7 @@ Design notes:
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import os
 from typing import Any, AsyncIterator, Dict, Optional
@@ -179,27 +180,62 @@ class SaarasStreamingASR:
                 sample_rate=str(self.sample_rate),
             ) as socket:
 
-                # --- Send all audio chunks ---
-                async for raw_bytes in audio_chunks:
-                    if not raw_bytes:
-                        continue
-                    b64_audio = base64.b64encode(raw_bytes).decode("utf-8")
-                    await socket.transcribe(
-                        audio=b64_audio,
-                        encoding=f"audio/{self.input_audio_codec}",
-                        sample_rate=self.sample_rate,
-                    )
+                response_queue: asyncio.Queue[Any] = asyncio.Queue()
+                _SENTINEL = object()
+                send_done = asyncio.Event()
+                send_exc: list[Exception] = []
 
-                # --- Flush if this is the last call ---
-                if is_final_chunk:
-                    await socket.flush()
+                async def _send_loop():
+                    try:
+                        async for raw_bytes in audio_chunks:
+                            if not raw_bytes:
+                                continue
+                            b64_audio = base64.b64encode(raw_bytes).decode("utf-8")
+                            await socket.transcribe(
+                                audio=b64_audio,
+                                encoding=f"audio/{self.input_audio_codec}",
+                                sample_rate=self.sample_rate,
+                            )
+                        if is_final_chunk:
+                            await socket.flush()
+                    except Exception as err:
+                        send_exc.append(err)
+                    finally:
+                        send_done.set()
 
-                # --- Receive and normalize all responses ---
-                async for response in socket:
-                    event = self._handle_response(response)
-                    if event is not None:
-                        last_event = event
-                        yield event
+                async def _recv_loop():
+                    try:
+                        async for response in socket:
+                            await response_queue.put(response)
+                    except Exception as err:
+                        await response_queue.put(err)
+                    finally:
+                        await send_done.wait()
+                        await response_queue.put(_SENTINEL)
+
+                send_task = asyncio.create_task(_send_loop())
+                recv_task = asyncio.create_task(_recv_loop())
+
+                try:
+                    while True:
+                        item = await response_queue.get()
+                        if item is _SENTINEL:
+                            break
+                        if isinstance(item, Exception):
+                            raise item
+                        event = self._handle_response(item)
+                        if event is not None:
+                            last_event = event
+                            yield event
+                finally:
+                    if not send_task.done():
+                        send_task.cancel()
+                    if not recv_task.done():
+                        recv_task.cancel()
+                    await asyncio.gather(send_task, recv_task, return_exceptions=True)
+
+                if send_exc:
+                    raise send_exc[0]
 
         except ApiError as err:
             raise SaarasStreamingError(

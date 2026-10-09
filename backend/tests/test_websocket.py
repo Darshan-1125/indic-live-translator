@@ -1,25 +1,22 @@
-import asyncio
 import json
-import websockets
 import pytest
+from fastapi.testclient import TestClient
+from app.main import app
 
-@pytest.mark.asyncio
-async def test_websocket():
-    uri = "ws://127.0.0.1:8000/ws/session/test-room"
 
-    async with websockets.connect(uri) as websocket:
-        print("Connected to WebSocket!")
-
+def test_websocket():
+    client = TestClient(app)
+    with client.websocket_connect("/ws/session/test-room") as websocket:
         message = {
             "type": "ping",
             "message": "Hello backend"
         }
-
-        await websocket.send(json.dumps(message))
-        print("Sent:", message)
-
-        response = await websocket.recv()
-        print("Received:", response)
+        websocket.send_json(message)
+        response = websocket.receive_json()
+        assert response["type"] == "ack"
+        assert response["received_data"] == message
 
 
-asyncio.run(test_websocket())
+if __name__ == "__main__":
+    test_websocket()
+    print("WebSocket test passed!")

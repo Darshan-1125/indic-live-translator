@@ -6,6 +6,8 @@ from app.core.config import settings
 from app.routes.health import router as health_router
 from app.routes.livekit import router as livekit_router
 from app.websocket.endpoints import router as ws_router
+from app.websocket.translate import router as translate_ws_router
+from app.routes.audio import router as audio_router
 
 # Configure logging
 logging.basicConfig(
@@ -22,10 +24,11 @@ app = FastAPI(
     debug=settings.DEBUG,
 )
 
-# Configure CORS middleware for local React development
+# Configure CORS middleware for local React / Vite development and LAN access
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ORIGINS,
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+)(:\d+)?$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -35,7 +38,8 @@ app.add_middleware(
 app.include_router(health_router)
 app.include_router(livekit_router)
 app.include_router(ws_router)
-
+app.include_router(translate_ws_router)
+app.include_router(audio_router)
 
 @app.get("/")
 async def root():
