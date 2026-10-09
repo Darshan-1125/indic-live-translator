@@ -18,7 +18,7 @@ export const MeetingHeader: React.FC<MeetingHeaderProps> = ({
   preferredLanguage,
   onLeaveRoom,
 }) => {
-  const { useMockMode, connectionState, toggleMockMode } = useLiveKit();
+  const { useMockMode, connectionStatusDisplay, toggleMockMode } = useLiveKit();
 
   const getLanguageName = (code?: string) => {
     if (!code) return '';
@@ -46,14 +46,14 @@ export const MeetingHeader: React.FC<MeetingHeaderProps> = ({
                 <Cpu className="w-3 h-3 text-purple-400" />
                 <span>Mock Mode</span>
               </button>
-            ) : connectionState === 'connected' ? (
+            ) : connectionStatusDisplay === 'Connected' ? (
               <span className="text-[10px] bg-emerald-500/20 text-emerald-300 font-medium px-2 py-0.5 rounded-full border border-emerald-500/30 flex items-center gap-1">
                 <ShieldCheck className="w-3 h-3 text-emerald-400" />
-                <span>LiveKit Connected</span>
+                <span>Connected</span>
               </span>
             ) : (
               <span className="text-[10px] bg-amber-500/20 text-amber-300 font-medium px-2 py-0.5 rounded-full border border-amber-500/30">
-                LiveKit: {connectionState}
+                {connectionStatusDisplay}
               </span>
             )}
           </h1>

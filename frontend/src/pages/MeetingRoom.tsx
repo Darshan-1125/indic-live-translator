@@ -1,13 +1,13 @@
 import React, { useEffect, useState } from 'react';
 import { Users, AlertCircle, X } from 'lucide-react';
-import type { RoomConfig, Participant, LiveTranscript } from '../types/meeting';
+import type { RoomConfig, Participant } from '../types/meeting';
 import { SUPPORTED_LANGUAGES } from '../types/meeting';
 import { INITIAL_MOCK_PARTICIPANTS } from '../data/mockParticipants';
-import { INITIAL_MOCK_TRANSCRIPTS } from '../data/mockTranscripts';
 import { ParticipantGrid } from '../components/ParticipantGrid';
 import { TranscriptPanel } from '../components/TranscriptPanel';
 import { MeetingControls } from '../components/MeetingControls';
 import { useLiveKitMeeting } from '../hooks/useLiveKitMeeting';
+import { useMeetingTranslation } from '../hooks/useMeetingTranslation';
 
 interface MeetingRoomProps {
   config: RoomConfig;
@@ -15,28 +15,46 @@ interface MeetingRoomProps {
 }
 
 export const MeetingRoom: React.FC<MeetingRoomProps> = ({ config, onLeaveRoom }) => {
-  // LiveKit Meeting Hook
+  const [preferredLanguage, setPreferredLanguage] = useState(config.preferredLanguage || 'en');
+  const [showSubtitles, setShowSubtitles] = useState(true);
+
+  // Single authoritative source of truth for media state & participant tracks
   const {
     connectionState,
     useMockMode,
     error: livekitError,
     deviceError,
     isConnected,
-    localParticipant: livekitLocal,
+    isMuted,
+    isVideoOff,
+    localAudioTrack,
+    localParticipant: activeCurrentUser,
     remoteParticipants: livekitRemotes,
     toggleMicrophone,
     toggleCamera,
     connect,
     disconnect,
     clearDeviceError,
-  } = useLiveKitMeeting(config.spokenLanguage);
+  } = useLiveKitMeeting(config.spokenLanguage, config.userName, preferredLanguage);
 
-  // Local Media & UI Controls State
-  const [isMuted, setIsMuted] = useState(false);
-  const [isVideoOff, setIsVideoOff] = useState(false);
-  const [showSubtitles, setShowSubtitles] = useState(true);
-  const [preferredLanguage, setPreferredLanguage] = useState(config.preferredLanguage || 'en');
-  const [transcripts, setTranscripts] = useState<LiveTranscript[]>(INITIAL_MOCK_TRANSCRIPTS);
+  // Real-time speech-to-text & translation pipeline for video meeting
+  const {
+    connectionState: translationConnectionState,
+    error: translationError,
+    liveCaption,
+    transcripts,
+    isTranslating,
+    toggleTranslation,
+    addTranscript,
+    clearTranscripts,
+  } = useMeetingTranslation({
+    activeAudioTrack: localAudioTrack,
+    isMicMuted: isMuted,
+    sourceLanguageCode: config.spokenLanguage,
+    targetLanguageCode: preferredLanguage,
+    speakerName: config.userName,
+    enabled: showSubtitles,
+  });
 
   // Attempt LiveKit connection if explicit credentials provided
   useEffect(() => {
@@ -45,59 +63,20 @@ export const MeetingRoom: React.FC<MeetingRoomProps> = ({ config, onLeaveRoom })
     }
   }, [config.livekitUrl, config.livekitToken, connect]);
 
-  // Sync state if LiveKit local participant changes
-  useEffect(() => {
-    if (isConnected && livekitLocal) {
-      setIsMuted(livekitLocal.isMuted);
-      setIsVideoOff(livekitLocal.isVideoOff);
-    }
-  }, [isConnected, livekitLocal]);
-
   // Handle Leave Meeting
   const handleLeave = async () => {
-    if (isConnected) {
-      await disconnect();
-    }
+    await disconnect();
     onLeaveRoom();
   };
 
-  // Toggle Microphone
+  // Toggle Microphone: requests/releases mic track and updates authoritative state
   const handleToggleMic = async () => {
-    const targetEnable = isMuted; // If currently muted, we want to enable mic
-    if (isConnected) {
-      const res = await toggleMicrophone(targetEnable);
-      if (res.success) {
-        setIsMuted(!targetEnable);
-      }
-    } else {
-      // Mock mode local state toggle
-      setIsMuted(!isMuted);
-    }
+    await toggleMicrophone(isMuted);
   };
 
-  // Toggle Camera
+  // Toggle Camera: requests/releases camera track and updates authoritative state
   const handleToggleVideo = async () => {
-    const targetEnable = isVideoOff; // If currently off, we want to enable camera
-    if (isConnected) {
-      const res = await toggleCamera(targetEnable);
-      if (res.success) {
-        setIsVideoOff(!targetEnable);
-      }
-    } else {
-      // Mock mode local state toggle
-      setIsVideoOff(!isVideoOff);
-    }
-  };
-
-  // Participant Resolution: LiveKit vs Mock
-  const activeCurrentUser: Participant = isConnected && livekitLocal ? livekitLocal : {
-    id: 'user-self',
-    name: config.userName,
-    speakingLanguage: config.spokenLanguage,
-    listeningLanguage: preferredLanguage,
-    isMuted: isMuted,
-    isVideoOff: isVideoOff,
-    isSpeaking: !isMuted,
+    await toggleCamera(isVideoOff);
   };
 
   const activeRemoteParticipants: Participant[] = isConnected
@@ -107,14 +86,6 @@ export const MeetingRoom: React.FC<MeetingRoomProps> = ({ config, onLeaveRoom })
   const getLanguageName = (code: string) => {
     const lang = SUPPORTED_LANGUAGES.find((l) => l.code === code);
     return lang ? lang.name : code;
-  };
-
-  const handleAddTranscript = (newTranscript: LiveTranscript) => {
-    setTranscripts((prev) => [newTranscript, ...prev]);
-  };
-
-  const handleClearTranscripts = () => {
-    setTranscripts([]);
   };
 
   return (
@@ -128,7 +99,7 @@ export const MeetingRoom: React.FC<MeetingRoomProps> = ({ config, onLeaveRoom })
           </div>
           <button
             onClick={clearDeviceError}
-            className="p-1 hover:bg-rose-500/20 rounded text-rose-400 transition-colors"
+            className="p-1 hover:bg-rose-500/20 rounded text-rose-400 transition-colors cursor-pointer"
           >
             <X className="w-3.5 h-3.5" />
           </button>
@@ -189,14 +160,19 @@ export const MeetingRoom: React.FC<MeetingRoomProps> = ({ config, onLeaveRoom })
             <TranscriptPanel
               transcripts={transcripts}
               preferredLanguage={preferredLanguage}
-              onAddTranscript={handleAddTranscript}
-              onClearTranscripts={handleClearTranscripts}
+              onAddTranscript={addTranscript}
+              onClearTranscripts={clearTranscripts}
+              liveCaption={liveCaption}
+              connectionState={translationConnectionState}
+              error={translationError}
+              isTranslating={isTranslating}
+              onToggleTranslation={toggleTranslation}
             />
           </div>
         )}
       </div>
 
-      {/* Footer Controls */}
+      {/* Footer Controls: Bound to the single authoritative isMuted and isVideoOff source */}
       <MeetingControls
         isMuted={isMuted}
         isVideoOff={isVideoOff}

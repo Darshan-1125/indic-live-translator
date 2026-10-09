@@ -12,8 +12,8 @@ export const getLiveKitConfig = (): LiveKitConfig => {
   return {
     serverUrl,
     token,
-    // Automatically use mock mode if no URL or Token is provided, or if explicitly forced
-    useMockMode: forceMock || !serverUrl || !token,
+    // Only use mock mode if explicitly forced via VITE_USE_MOCK_MODE=true
+    useMockMode: forceMock,
   };
 };
 

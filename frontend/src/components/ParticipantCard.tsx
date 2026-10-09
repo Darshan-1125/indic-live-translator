@@ -29,29 +29,38 @@ export const ParticipantCard: React.FC<ParticipantCardProps> = ({
     return lang ? lang.name : code.toUpperCase();
   };
 
-  // Attach real LiveKit video track when video is enabled and rawParticipant exists
+  // Attach real LiveKit video track or local MediaStream when video is enabled
   useEffect(() => {
     const videoEl = videoRef.current;
+    if (!videoEl || participant.isVideoOff) return;
+
+    // Case 1: Real LiveKit video track
     const raw = participant.rawParticipant;
+    if (raw) {
+      const pubMap = raw.videoTrackPublications as Map<string, any>;
+      const pubList = Array.from(pubMap.values());
 
-    if (!videoEl || !raw || participant.isVideoOff) return;
+      const trackPub = pubList.find(
+        (pub) => pub.source === Track.Source.Camera || pub.kind === Track.Kind.Video
+      );
 
-    // Access track publications safely
-    const pubMap = raw.videoTrackPublications as Map<string, any>;
-    const pubList = Array.from(pubMap.values());
+      const track = trackPub?.track;
+      if (track && typeof track.attach === 'function') {
+        track.attach(videoEl);
+        return () => {
+          track.detach(videoEl);
+        };
+      }
+    }
 
-    const trackPub = pubList.find(
-      (pub) => pub.source === Track.Source.Camera || pub.kind === Track.Kind.Video
-    );
-
-    const track = trackPub?.track;
-    if (track && typeof track.attach === 'function') {
-      track.attach(videoEl);
+    // Case 2: Local MediaStream (Mock / Offline mode)
+    if (participant.localStream) {
+      videoEl.srcObject = participant.localStream;
       return () => {
-        track.detach(videoEl);
+        videoEl.srcObject = null;
       };
     }
-  }, [participant.rawParticipant, participant.isVideoOff]);
+  }, [participant.rawParticipant, participant.isVideoOff, participant.localStream]);
 
   const raw = participant.rawParticipant;
   const pubMap = raw ? (raw.videoTrackPublications as Map<string, any>) : null;
@@ -59,6 +68,12 @@ export const ParticipantCard: React.FC<ParticipantCardProps> = ({
   const hasLiveKitVideo = Boolean(
     raw && !participant.isVideoOff && pubList.some((pub) => pub && pub.track)
   );
+  const hasLocalVideo = Boolean(
+    !participant.isVideoOff &&
+      participant.localStream &&
+      participant.localStream.getVideoTracks().length > 0
+  );
+  const showVideoFeed = hasLiveKitVideo || hasLocalVideo;
 
   return (
     <div
@@ -81,8 +96,8 @@ export const ParticipantCard: React.FC<ParticipantCardProps> = ({
               <span>Camera Off</span>
             </div>
           </div>
-        ) : hasLiveKitVideo ? (
-          /* Real LiveKit Video Feed */
+        ) : showVideoFeed ? (
+          /* Real Video Feed (LiveKit or Local Stream) */
           <video
             ref={videoRef}
             autoPlay
@@ -91,7 +106,7 @@ export const ParticipantCard: React.FC<ParticipantCardProps> = ({
             className="w-full h-full object-cover rounded-t-2xl"
           />
         ) : (
-          /* Mock / Video Feed Container */
+          /* Mock / Video Feed Placeholder for remote participants */
           <div className="w-full h-full flex flex-col items-center justify-center relative p-4">
             <div className="relative">
               <div

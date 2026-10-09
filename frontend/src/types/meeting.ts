@@ -31,6 +31,7 @@ export interface Participant {
   avatarUrl?: string;
   isLiveKitParticipant?: boolean;
   rawParticipant?: LocalParticipant | RemoteParticipant;
+  localStream?: MediaStream | null;
 }
 
 export interface LiveTranscript {

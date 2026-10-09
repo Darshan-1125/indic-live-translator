@@ -1,8 +1,9 @@
 import React, { useState } from 'react';
-import { Sparkles, User, Key, ArrowRight, Server, ChevronDown, ChevronUp } from 'lucide-react';
+import { Sparkles, User, Key, ArrowRight, Server, AlertCircle, Loader2 } from 'lucide-react';
 import type { RoomConfig } from '../types/meeting';
 import { LanguageSelector } from '../components/LanguageSelector';
 import { useLiveKit } from '../context/LiveKitContext';
+import { fetchLiveKitToken } from '../services/livekitService';
 
 interface JoinMeetingProps {
   onJoinRoom: (config: RoomConfig) => void;
@@ -16,23 +17,50 @@ export const JoinMeeting: React.FC<JoinMeetingProps> = ({ onJoinRoom }) => {
   const [spokenLanguage, setSpokenLanguage] = useState('hi');
   const [preferredLanguage, setPreferredLanguage] = useState('en');
 
-  // Optional LiveKit server connection override fields
-  const [showAdvanced, setShowAdvanced] = useState(false);
-  const [livekitUrl, setLivekitUrl] = useState('');
-  const [livekitToken, setLivekitToken] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
+  const [apiError, setApiError] = useState<string | null>(null);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!userName.trim() || !roomId.trim()) return;
+    const cleanUserName = userName.trim();
+    const cleanRoomId = roomId.trim();
 
-    onJoinRoom({
-      userName: userName.trim(),
-      roomId: roomId.trim(),
-      spokenLanguage,
-      preferredLanguage,
-      livekitUrl: livekitUrl.trim() || undefined,
-      livekitToken: livekitToken.trim() || undefined,
-    });
+    if (!cleanUserName || !cleanRoomId) return;
+
+    // If Mock Mode is active, join immediately without backend API call
+    if (useMockMode) {
+      onJoinRoom({
+        userName: cleanUserName,
+        roomId: cleanRoomId,
+        spokenLanguage,
+        preferredLanguage,
+      });
+      return;
+    }
+
+    // Real LiveKit Mode: Request token from backend API
+    setIsLoading(true);
+    setApiError(null);
+
+    try {
+      const { token, url } = await fetchLiveKitToken(cleanRoomId, cleanUserName);
+
+      onJoinRoom({
+        userName: cleanUserName,
+        roomId: cleanRoomId,
+        spokenLanguage,
+        preferredLanguage,
+        livekitUrl: url,
+        livekitToken: token,
+      });
+    } catch (err: unknown) {
+      const errorMessage =
+        err instanceof Error
+          ? err.message
+          : 'Unable to connect to the meeting server. Please try again.';
+      setApiError(errorMessage);
+      setIsLoading(false);
+    }
   };
 
   return (
@@ -59,19 +87,46 @@ export const JoinMeeting: React.FC<JoinMeetingProps> = ({ onJoinRoom }) => {
         <div className="bg-slate-800/60 p-3 rounded-2xl border border-slate-700/60 flex items-center justify-between text-xs">
           <div className="flex items-center gap-2 text-slate-300">
             <Server className="w-4 h-4 text-indigo-400" />
-            <span>Connection Mode:</span>
+            <span>Mode:</span>
             <span className="font-semibold text-indigo-300">
-              {useMockMode ? 'Interactive Mock Mode' : 'LiveKit Server Mode'}
+              {useMockMode ? 'Interactive Mock Mode' : 'Live Backend Token Mode'}
             </span>
           </div>
           <button
             type="button"
-            onClick={() => toggleMockMode()}
+            onClick={() => {
+              setApiError(null);
+              toggleMockMode();
+            }}
             className="text-[11px] font-medium text-indigo-400 hover:text-indigo-300 bg-indigo-500/10 hover:bg-indigo-500/20 px-2.5 py-1 rounded-lg border border-indigo-500/30 transition-colors cursor-pointer"
           >
-            Switch to {useMockMode ? 'LiveKit Mode' : 'Mock Mode'}
+            Switch to {useMockMode ? 'Live Backend Mode' : 'Mock Mode'}
           </button>
         </div>
+
+        {/* API Error Alert */}
+        {apiError && (
+          <div className="bg-rose-500/10 border border-rose-500/30 p-3 rounded-xl text-xs text-rose-300 space-y-2">
+            <div className="flex items-start gap-2">
+              <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+              <div className="flex-1">
+                <p className="font-medium text-rose-200">{apiError}</p>
+              </div>
+            </div>
+            <div className="pt-1 flex justify-end">
+              <button
+                type="button"
+                onClick={() => {
+                  setApiError(null);
+                  toggleMockMode(true);
+                }}
+                className="text-[11px] underline text-indigo-300 hover:text-indigo-200 cursor-pointer"
+              >
+                Continue in Offline Mock Mode &rarr;
+              </button>
+            </div>
+          </div>
+        )}
 
         <form onSubmit={handleSubmit} className="space-y-4">
           {/* User Name input */}
@@ -84,10 +139,11 @@ export const JoinMeeting: React.FC<JoinMeetingProps> = ({ onJoinRoom }) => {
               id="user-name-input"
               type="text"
               required
+              disabled={isLoading}
               value={userName}
               onChange={(e) => setUserName(e.target.value)}
               placeholder="e.g. Rahul Verma"
-              className="w-full bg-slate-800 text-slate-100 text-sm rounded-xl border border-slate-700 px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all"
+              className="w-full bg-slate-800 text-slate-100 text-sm rounded-xl border border-slate-700 px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all disabled:opacity-50"
             />
           </div>
 
@@ -101,10 +157,11 @@ export const JoinMeeting: React.FC<JoinMeetingProps> = ({ onJoinRoom }) => {
               id="room-id-input"
               type="text"
               required
+              disabled={isLoading}
               value={roomId}
               onChange={(e) => setRoomId(e.target.value)}
               placeholder="e.g. indic-meet-101"
-              className="w-full bg-slate-800 text-slate-100 text-sm rounded-xl border border-slate-700 px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all font-mono"
+              className="w-full bg-slate-800 text-slate-100 text-sm rounded-xl border border-slate-700 px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all font-mono disabled:opacity-50"
             />
           </div>
 
@@ -124,56 +181,23 @@ export const JoinMeeting: React.FC<JoinMeetingProps> = ({ onJoinRoom }) => {
             />
           </div>
 
-          {/* Optional Advanced LiveKit Credentials Collapsible */}
-          <div className="pt-2">
-            <button
-              type="button"
-              onClick={() => setShowAdvanced(!showAdvanced)}
-              className="text-xs text-slate-400 hover:text-slate-200 flex items-center gap-1.5 transition-colors cursor-pointer"
-            >
-              <Server className="w-3.5 h-3.5 text-indigo-400" />
-              <span>LiveKit Connection Settings (Optional)</span>
-              {showAdvanced ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-            </button>
-
-            {showAdvanced && (
-              <div className="mt-3 bg-slate-950/80 p-4 rounded-2xl border border-slate-800 space-y-3">
-                <p className="text-[11px] text-slate-400">
-                  Leave blank to use environment variables (`VITE_LIVEKIT_URL`, `VITE_LIVEKIT_TOKEN`) or Mock Mode.
-                </p>
-
-                <div className="space-y-1">
-                  <label className="text-[11px] text-slate-300">LiveKit Server URL</label>
-                  <input
-                    type="text"
-                    value={livekitUrl}
-                    onChange={(e) => setLivekitUrl(e.target.value)}
-                    placeholder="wss://your-livekit-server.livekit.cloud"
-                    className="w-full bg-slate-900 text-slate-200 text-xs rounded-lg border border-slate-700 px-3 py-2 font-mono"
-                  />
-                </div>
-
-                <div className="space-y-1">
-                  <label className="text-[11px] text-slate-300">LiveKit Room Token</label>
-                  <input
-                    type="password"
-                    value={livekitToken}
-                    onChange={(e) => setLivekitToken(e.target.value)}
-                    placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
-                    className="w-full bg-slate-900 text-slate-200 text-xs rounded-lg border border-slate-700 px-3 py-2 font-mono"
-                  />
-                </div>
-              </div>
-            )}
-          </div>
-
           {/* Submit Button */}
           <button
             type="submit"
-            className="w-full mt-4 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white font-semibold text-sm py-3.5 px-6 rounded-xl shadow-lg shadow-indigo-600/30 flex items-center justify-center gap-2 transition-all cursor-pointer group"
+            disabled={isLoading}
+            className="w-full mt-4 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white font-semibold text-sm py-3.5 px-6 rounded-xl shadow-lg shadow-indigo-600/30 flex items-center justify-center gap-2 transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed group"
           >
-            <span>Enter Meeting Room</span>
-            <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
+            {isLoading ? (
+              <>
+                <Loader2 className="w-4 h-4 animate-spin text-white" />
+                <span>Connecting to Meeting Server...</span>
+              </>
+            ) : (
+              <>
+                <span>Enter Meeting Room</span>
+                <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
+              </>
+            )}
           </button>
         </form>
       </div>
